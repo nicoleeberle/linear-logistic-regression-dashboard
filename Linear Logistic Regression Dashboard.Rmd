@@ -1,0 +1,1055 @@
+---
+title: "Linear & Logistic Regression"
+author: "Nicole Eberle"
+# date: "2022-08-01"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: scroll
+    source_code: embed
+    theme: yeti
+---
+
+```{r setup, include=FALSE,warning=FALSE}
+library(flexdashboard)
+library(readr) #v2.1.2 read_csv()
+library(tidymodels) 
+  #library(dplyr) #v1.0.7 %>%, select(), select_if(), filter(), mutate(), group_by(), 
+    #summarize(), tibble()
+  #library(ggplot2) #v3.3.5 ggplot()
+library(janitor) #clean_names()
+library(skimr) #v2.1.4 for for skim()
+library(gridExtra) #grid.arrange()
+library(GGally) #v2.1.2 for ggpairs
+library(ggcorrplot) #v0.1.3 ggcorrplot()
+library(vip) #v0.3.2 vip() (variable importance)
+library(performance) #v0.9.1 check_model
+library(see) #v0.7.1  for check_model plots from performance
+library(patchwork) #v1.1.1for check_model plots from performance
+library(forcats)
+library(mgcv) #v1.8-40 gam() - different from book gam()
+library(mgcViz) #v0.1.9 getViz() plot for gams
+library(pROC) #v1.18.0 roc()
+```
+
+
+
+```{r, warning=FALSE}
+#Load the data
+df_bike <- read_csv("SeoulBikeData.csv",locale=locale(encoding="latin1"))
+
+# Clean the data
+df_bike <- df_bike %>%
+  clean_names() %>%
+  mutate(rented_demand_level = factor(if_else(rented_bike_count>=500,"High","Low"),levels=c("High","Low"))) %>%
+  mutate(time_day = factor(if_else(hour<=4,"Overnight",
+                                   if_else(hour<7,"Early AM",
+                                           if_else(hour<11,"AM",
+                                                   if_else(hour<17,"PM","Late PM")))))) %>%
+  mutate(day_of_week = factor(weekdays(as.Date(date)))) %>%
+  mutate(month = factor(months(as.Date(date)))) %>%
+  filter(functioning_day == "Yes") %>%
+  dplyr::select(-date, -functioning_day, -hour) %>%
+  mutate(seasons = factor(seasons)) %>%
+  mutate(holiday = factor(holiday,levels=c("No Holiday","Holiday"))) %>%
+  mutate(rain_yes = factor(if_else(rainfall_mm >0,1,0))) %>%
+  mutate(snow_yes = factor(if_else(snowfall_cm >0,1,0))) 
+  
+```
+
+Introduction {data-orientation=rows}
+=======================================================================
+
+Row {data-height=650}
+-----------------------------------------------------------------------
+### The Project
+
+#### The Problem Description
+The city of Seoul is currently trying to understand the demand for their rental bikes in order to be able to meet public demand while maintaining a cost-effective bike sharing system. They have collected hourly data on bike demand along with weather and calendar characteristics. The goal of this analysis is to understand if Seoul can predict demand based on weather and calendar characteristics. They also are curious if there are certain characteristics that indicate high or low expected demand levels. The first step of this analysis is to complete exploratory data analysis in order to better understand the data. In this step we will look at the distribution of the variables along with examine the relationships between the variables. The next step of the analysis is to predict the bike demand using regression analysis...
+
+#### The Data
+The original dataset has 8,760 observations with 14 variables. After cleaning the data, there are 8,465 observations with 15 variables. 
+
+#### Data Sources
+This data was found on the UCI Machine Learning Repository website. 
+
+* Dataset: http://archive.ics.uci.edu/ml/datasets/Seoul+Bike+Sharing+Demand 
+* Data Source:  http://data.seoul.go.kr/ 
+
+### The Data
+ORIGINAL VARIABLES TO PREDICT WITH
+
+* **date**: Formatted day-month-year
+* **hour**: Hour of the day (values of 0 through 23)
+* **temperature**: Temperature in Celsius
+* **humidity**:  Percent humidity 
+* **Windspeed**: Windspeed in m/s
+* **visibility**:  Visibility in 10m
+* **dew_point_temperature**: Dew point temperature in Celsius 
+* **rainfall**: Rainfall in mm
+* **snowfall**:  Snowfall in cm 
+* **seasons**:  Season of the year (Winter, Spring, Summer, Autumn)
+* **holiday**: Indicator for if holiday or not (No holiday = 0, Holiday = 1)
+* **functional_day**: Indicates Yes/No if rental bikes were open 
+
+DERIVED VARIABLES TO PREDICT WITH
+In these instances, variables were derived from the original variable to reduce the number of categories. Once the derived variables were created, the original columns were dropped. 
+
+* **day_of_week**: Day of week, derived from date
+* **month**: Month, derived from date
+* **time_day**: Indicates time of day, derived from hour. Early AM: 5am-7am. AM: 8am-11am. PM: 12pm-5pm. Late PM: 6pm-11pm. Overnight: 12am-4am. 
+* **rain_yes**: Indicator for if rain or not (No rain = 0, Rain = 1)
+* **snow_yes**: Indicator for if snow or not (No snow = 0, Snow = 1)
+
+
+VARIABLES WE WANT TO PREDICT
+
+* **rented_bike_count**:  Count of bikes rented each hour
+* **rented_demand_level**: rented_bike_count > 500 coded as High, lower coded as Low
+
+
+Data Exploration {data-orientation=rows}
+=======================================================================
+Column {.sidebar data-width=400}
+-------------------------------------
+
+### Data Overview 
+
+While it is great to see that we have no missing values, the data overview shows us a couple things that we should watch out for as we continue the analysis. 
+
+First, for the categorical variables, day of week and month both have a lot of categories that could get to be a bit much in our models. As the modelling process begins, we may want to consider combining some of these to reduce the number of categories. For months, a next step looking at how the months within each season vary to see if we are better off using season instead of month, since these two variables will be highly correlated. 
+
+Next, when looking at the continuous variables, we can see that visibility, solar radiation, rainfall and snowfall are all skewed if you look at the mean vs median (p50) along with by looking at the mini histogram. We will look closer at this in the data visualization tab, but it is nice to note now before continuing on. 
+
+Finally, we can see that there are some upper outliers. Since weather can have extremes, no outliers have been removed from the analysis yet. This will be decided upon after looking at further visualizations of the data. 
+
+Column {data-width=450, data-height=875}
+-----------------------------------------------------------------------
+### View the Data Summaries
+In the data summary we can see that we have no missing values in any of our 8,465 records. We also can see how many unique categories there are in each categorical variable. For the continuous variables, we can see the mean, standard deviation along with the min, max and 25th, 50th, 75th percentile.
+
+```{r}
+skim(df_bike)
+```
+
+
+Column {data-width=250, data-height=400}
+-----------------------------------------------------------------------
+### Check for Outliers
+
+Here we can use the mean and standard deviation for each variable to calculate the upper and lower bounds using mean +/- standard deviation. The observations that fall outside these upper and lower bounds are technically outliers that should be investigated further. 
+
+```{r}
+# check for outliers
+
+# create list of quantitative variables
+quant <- df_bike %>%
+  select_if(is.numeric) %>%
+  names()
+
+# create empty list to store values in
+Lower <- c()
+Count_lower <- c()
+Upper <- c()
+Count_upper <- c()
+
+# function to find mean and standard deviation, along with how many values fall outside these lower/upper bounds
+for(n in quant){
+  mean = round(as.numeric(df_bike %>%
+                summarize(mean=mean(get(n)))),1)
+  sd = round(as.numeric(df_bike %>%
+                summarize(sd=sd(get(n)))),1)
+  lower = mean-(3*sd)
+  upper = mean+(3*sd)
+  count_lower = as.numeric(df_bike %>% 
+    filter(get(n)<lower) %>%
+    summarize(count=n()))
+  count_upper = as.numeric(df_bike %>% 
+    filter(get(n)>upper) %>%
+    summarize(count=n()))
+  Lower <- c(Lower,lower)
+  Count_lower <- c(Count_lower,count_lower)
+  Upper <- c(Upper,upper)
+  Count_upper <- c(Count_upper,count_upper)
+}
+
+# create table of values
+outliers <- tibble(Variable=quant,
+                   Lower_bound=Lower,
+                   Count_lower=Count_lower,
+                   Upper_bound=Upper,
+                   Count_upper=Count_upper)
+
+knitr::kable(outliers)
+
+```
+
+
+
+Data Visualization {data-orientation=rows}
+=======================================================================
+### Response Variables relationships with predictors
+In this section, we will visualize the variables in order to have a better understanding of the data we are working with before beginning the modeling process.
+
+row {data-height=550}
+-----------------------------------------------------------------------
+#### Rented Demand Level
+
+```{r, cache=TRUE}
+df_bike %>%
+  ggplot(aes(x=rented_demand_level)) + 
+  geom_bar() 
+```
+
+#### Rented Bike Count
+```{r, cache=TRUE}
+
+p <- df_bike %>%
+  ggplot(aes(rented_bike_count)) +
+  geom_histogram(bins=30) +
+  geom_vline(aes(xintercept=round(mean(rented_bike_count),1)))  +
+  ggtitle(paste("Distribution of Rented Bike Count - Mean:", round(mean(df_bike$rented_bike_count),1)))
+
+p2 <- df_bike %>%
+  ggplot(aes(rented_bike_count)) +
+  geom_boxplot() +
+  geom_vline(aes(xintercept=round(median(rented_bike_count),1))) + 
+  ggtitle(paste("Distribution of Rented Bike Count - Median:", round(median(df_bike$rented_bike_count),1)))
+
+grid.arrange(p,p2,ncol=1, nrow=2)
+
+
+```
+
+
+
+
+Row {.tabset data-height=2000}
+-----------------------------------------------------------------------
+### Distribution of Quantitative Predictors
+Based on histograms and box plots, it is obvious that visibility, solar radiation, rainfall and snowfall are all very skewed. Solar radiation, rainfall and snowfall are all right-skewed while visibility is left-skewed. When pulling in the data, derivied binary feels were already created for rainfall and snowfall, but the same may want to be considered for visibility and solar radiation once we start modeling. 
+```{r, fig.height=5, fig.width=5}
+
+#function to make hist/boxplot of predictors
+for(n in quant[-1]){
+  currmean <- round(as.numeric(df_bike %>%
+                summarize(mean=mean(get(n)))),1)
+  currmedian <- round(as.numeric(df_bike %>%
+                summarize(median=median(get(n)))),1)
+  p <- df_bike %>%
+          ggplot(aes(x=get(n))) +
+            geom_histogram(bins=30) +
+            geom_vline(aes(xintercept=currmean)) +
+            xlab(n) +
+            ggtitle(paste("Distribution of", n," - Mean:", currmean))
+  p2 <- df_bike %>%
+          ggplot(aes(x=get(n))) +
+            geom_boxplot() +
+            xlab(n) +
+            ggtitle(paste("Distribution of", n," - Median:", currmedian))
+  grid.arrange(p,p2,ncol=1, nrow=2)
+}
+
+
+```
+
+### Breakdown of Qualitative Predictors
+
+```{r, fig.height=5, fig.width=5}
+
+# create list of qualitative predictors
+qual_preds <- df_bike %>%
+  dplyr::select(-rented_demand_level) %>%
+  select_if(is.factor) %>%
+  names()
+
+# function to make bar graph of predictors
+for(n in qual_preds){
+  p <- ggplot(df_bike, aes(x=get(n))) +
+  geom_bar() +
+    geom_text(stat='count', aes(label=..count..), vjust=-.5, cex=2)+
+    xlab(n)+
+    ggtitle(paste('Count of hours per', n))
+  print(p)
+}
+
+
+```
+
+
+
+###  Rented Demand Level vs Quantitative Variables
+For Temperature and Dew Point Temperature, the density plots show that there is a fairly clear distinction for which values fall into High Demand and Low Demand. The other variables have some values that the density plots may show lean slightly more toward high or low demand, but they are not clearly as defined as the Temperature or Dew Point Temperature. 
+```{r, cache=TRUE,, fig.height=5, fig.width=5}
+# create density plots of quantity variables showing curves for high/low demand 
+for(n in quant[-1]){
+  # Create x intercepts
+  high_demand <- df_bike %>% filter(rented_demand_level=='High') %>% summarize(mean(get(n))) %>% pull()
+  low_demand <- df_bike %>% filter(rented_demand_level=='Low') %>% summarize(mean(get(n))) %>% pull()
+
+  #View high/low density plot
+  p <- ggplot(df_bike,aes(x=get(n),col=rented_demand_level)) +
+    geom_density() +
+    scale_color_manual(values= c('Red','Blue')) +
+    geom_vline(xintercept=high_demand, linetype = 4, col = 'Red') +
+    geom_vline(xintercept=low_demand, linetype = 4, col = 'Blue') +
+    ggtitle(paste(n,"vs. Demand Level")) +
+    xlab(paste(n))
+  print(p)
+}
+  
+
+```
+
+
+### Rented Demand Level vs Qualitative Variables
+To reduce our dummy variables, we may want to consider cutting down on some of the categorical variables or reduce the number of levels in the current variables. Based on the below box plots, some potential ways to clean up the categorical variables are
+
+* For season, Fall, Winter and Spring have similar behavior while Winter is significantly lower. An option would be to create a binary winter categorical variable instead. 
+* For the time of day variable, Early AM and Overnight appear to behave the same and could be combined along with AM and PM. This would reduce this variable down to 3 levels instead of 5. 
+* There does not appear to be much variation between days of the week, therefore this variable is probably not useful in our model.
+* For month, Decemeber, January and February have much lower distributions than the other months. Instead of using Winter from seasons, it probably makes sense to recode these months as winter and the other variables as not winter.
+ 
+```{r, cache=TRUE, fig.height=5, fig.width=5}
+
+# box plot of quantiative predictor variables for rented bike count
+for(n in qual_preds){
+  p <- ggplot(df_bike, aes(x = get(n), y=rented_bike_count)) + 
+        geom_boxplot() +
+        xlab(n) +
+        ggtitle(paste('Rented Bike Count Distribution by', n))
+print(p)
+}
+
+```
+
+
+### Correlation Matrix
+
+Most of our qualitative variables don't have a strong correlation (< +/-0.3) with our target variable. The only qualitative variables with a strong correlation are temperature and dew point temperature, with correlation coefficients of 0.56 and 0.4, respectively. 
+
+Based on the high correlation between temperature and dew point temperature, one of these variables should be dropped. From here on out, we will just be using temperature since it has a higher correlation with rented bike count.
+
+We also can see that humidity percent is fairly correlated with visibility and solar radiation (correlation coefficients of -0.55 and -0.46, respectively). When we run a linear model we may want to check the VIF on these variables but for now we are not going to be too concerned with multidisciplinary. Despite both being correlated with humidity, visibility and solar radiation do not have a strong correlation between each other (correlation coefficient: 0.15). 
+
+```{r, cache=TRUE,  fig.height=6, fig.width=6}
+# create list of qualitative predictors (weather)
+df_qual_vars <- df_bike %>%
+  select(where(is.numeric))
+
+ggcorrplot(cor(df_qual_vars), lab = TRUE)
+
+```
+
+
+### Continuous Weather Variable Scatterplots vs Rented Bike Count
+```{r, cache=TRUE, fig.height=5, fig.width=5}
+
+# scatter plot of quanitative predictors vs rented bike count
+
+# quantitative predictors
+quant_pred_names <- df_bike %>%
+  dplyr::select(-rented_bike_count) %>%
+  dplyr::select_if(is.numeric) %>%
+  names()
+
+# function to make scatterplots of predictor variables vs rented bike count
+for(n in quant_pred_names){
+  p <- ggplot(df_bike, aes(x = get(n), y=rented_bike_count))
+  p <- p + geom_point() +
+    geom_smooth(method = "lm") +
+    xlab(n) +
+    ggtitle(paste(n,"vs. Rented Bike Count"))
+print(p)
+}
+
+```
+
+
+### Updated Data Summaries
+After exploring our the data, some updates have been made to the variables. December, Januaray and February have been grouped together in a binary Winter variable. This replaces month and seasons since those variables had high correlation and more levels. The time of day categories have also been reduced to three levels instead of five based on some levels having very similar distributions. The outliers for the weather variables have been left in the dataset upon closer examination, but the outliers for rented biked count have been removed since we want to focus on more typical demand rather than predicting extremes. 
+
+This is our final dataset that will be used for modeling. To prepare for modeling, a recipe has been applied to this dataset to create dummy variables for all categorical variables while all numeric predictors have been normalized. The data was then split 70/30 into train and test datasets, stratified to include an equal distribution of rented demand level in each dataset. 
+
+
+```{r, cache=TRUE}
+# updating variables based on descriptive stats
+df_bike <- df_bike %>%
+  subset(rented_bike_count < 2656.4) %>%
+  mutate(winter = factor(if_else(month==c("Decemeber", "January", "February"),1,0))) %>%
+  dplyr::select(-dew_point_temperature_c,-day_of_week,-seasons,-month)   
+
+df_bike$time_day <- fct_collapse(df_bike$time_day,
+               Overnight = c("Overnight", "Early AM"),
+               Daytime = c("AM","PM"),
+               Evening = "Late PM")
+
+skim(df_bike)
+
+# normalize data
+my_recipe <- recipe(rented_bike_count ~ ., data = df_bike) %>%
+  step_dummy(all_nominal(),-rented_demand_level) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  prep()
+
+bike_norm <- bake(my_recipe, df_bike)
+
+# create normalized train and test data sets
+set.seed(123)
+bike_split_norm <- initial_split(bike_norm, prop = .70, strata = rented_demand_level)
+df_bike_train_norm <- training(bike_split_norm)
+df_bike_test_norm <- testing(bike_split_norm)
+
+```
+
+Rented Bike Count Models {data-orientation=rows}
+=======================================================================
+### Predicting Rented Bike Count (Continuous Target)
+
+First, two linear regression models have been created. The first model uses all predictors except for the binary rain and snow variables. The second model uses all predictors except for the rain and snow measurement variables. This will show weather the measurements or the binary variables are a stronger predictor to decide which should be used in future models. 
+
+row {data-height=1600}
+-----------------------------------------------------------------------
+#### Linear Regression using Rain and Snow Measurements
+
+After training the model, the model was tested for accuracy. Here are the accuracy/error results:
+```{r, cache=TRUE}
+#Define the linear model specification
+reg_spec <- linear_reg() %>% 
+   set_engine("lm") %>%  
+   set_mode("regression") 
+
+#Fit the normalized regression model using all predictors except for rented_demand_level (categorical target) and rain_yes and snow_yes (using measurements instead) 
+reg_fit_norm <- reg_spec %>%  
+   fit(rented_bike_count ~ .-rented_demand_level-rain_yes_X1-snow_yes_X1,data = df_bike_train_norm)
+
+#Capture the predictions and metrics
+pred_reg_fit_norm <- reg_fit_norm %>%
+  augment(df_bike_test_norm)
+
+# model results
+reg_metrics = metric_set(yardstick::rsq,
+                         yardstick::mae,
+                         yardstick::rmse)
+
+curr_metrics <- pred_reg_fit_norm %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+results <- tibble(model = 'Linear Reg - Weather Measurements',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+knitr::kable(results,digits=3)
+
+```
+
+
+Here are the variable coefficients and significance. Note that the snowfall measurement variable is not significant. We also can look at the variable importance plot to see which variables are most important within the model. 
+```{r, cache=TRUE}
+
+knitr::kable(tidy(reg_fit_norm$fit),digits=3)
+
+
+vip(reg_fit_norm)
+
+```
+Here is a visualization of how well the model was able to predict the rented bike count:
+```{r, cache=TRUE}
+pred_reg_fit_norm %>%
+  ggplot(aes(y = .pred, x = rented_bike_count)) +
+  geom_point(col = "#6e0000") +
+  geom_abline(col="gold") +
+  ggtitle("Predicted Rented Bike Count vs Actual Rented Bike Count", subtitle=paste("Linear Regression (Rain & Snow Measurements)"))
+```
+
+#### Linear Regression using Binary Rain and Snow Indicators
+
+After training the model, the model was tested for accuracy. Here are the accuracy/error results:
+```{r, cache=TRUE}
+#Define the linear model specification
+reg_spec <- linear_reg() %>% 
+   set_engine("lm") %>%  
+   set_mode("regression") 
+
+#Fit the normalized regression model using all predictors except for rented_demand_level (categorical target) and rain_yes and snow_yes (using measurements instead) 
+#Fit the normalized regression model using all predictors except for rented_demand_level (categorical target) and precipitation measurements (using yes instead) 
+reg_fit_norm2 <- reg_spec %>%  
+   fit(rented_bike_count ~ .-rented_demand_level-rainfall_mm-snowfall_cm,data = df_bike_train_norm)
+
+#Capture the predictions and metrics
+pred_reg_fit_norm2 <- reg_fit_norm2 %>%
+  augment(df_bike_test_norm)
+
+curr_metrics <- pred_reg_fit_norm2 %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+results2 <- tibble(model = 'Linear Reg - Weather Indicators',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+knitr::kable(results2,digits=3)
+
+```
+
+
+Here are the variable coefficients and significance. Note that the snowfall indicator variable is significant. We also can look at the variable importance plot to see that the rain binary indicator has a higher importance than the rain measurement did. The snow binary indicator is low on the the variable importance plot, but the snow measurement variable had not been present at all. 
+```{r, cache=TRUE}
+
+knitr::kable(tidy(reg_fit_norm2$fit),digits=3)
+
+vip(reg_fit_norm2)
+
+```
+Here is a visualization of how well the model was able to predict the rented bike count:
+```{r, cache=TRUE}
+pred_reg_fit_norm2 %>%
+  ggplot(aes(y = .pred, x = rented_bike_count)) +
+  geom_point(col = "#6e0000") +
+  geom_abline(col="gold") +
+  ggtitle("Predicted Rented Bike Count vs Actual Rented Bike Count", subtitle=paste("Linear Regression (Rain & Snow Binary Indicators)"))
+```
+
+row 
+-----------------------------------------------------------------------
+### Ridge and Lasso Regression
+
+Now that it has been decided to continue with the binary weather indicators based on the higher R-sqaured and lower MAE and RMSE, Ridge and Lasso regression will be performed to check if any additional variables need to be removed. Due to the extensive exploratory variable analysis done prior, we may have already narrowed the model down to the significant predictors. 
+
+Both the Ridge and Lasso Regression models will be tuned to pick the best model based on the lowest RMSE. 
+
+row {data-height=1500}
+-----------------------------------------------------------------------
+#### Ridge Regression
+
+
+```{r}
+# drop precipitation measurements since categorical leads to a strong model
+bike_norm <- bike_norm %>%
+  select(-rainfall_mm,-snowfall_cm)
+
+df_bike_test_norm <- df_bike_test_norm %>%
+  select(-rainfall_mm,-snowfall_cm)
+
+df_bike_train_norm <- df_bike_train_norm %>%
+  select(-rainfall_mm,-snowfall_cm)
+```
+
+
+
+```{r}
+bike_grid <- tibble(penalty = seq(.1, 100, len = 500))
+bike_folds <- vfold_cv(df_bike_train_norm, v = 5)
+
+# ridge regression
+rr_spec <- linear_reg(penalty = tune(),
+                      mixture = 0) %>%
+  set_engine("glmnet") %>%
+  set_mode("regression")
+
+bike_rrtune_wf <- workflow() %>%
+  add_model(rr_spec) %>%
+  add_formula(rented_bike_count ~ .-rented_demand_level)
+
+bike_rrtune_rs <- bike_rrtune_wf %>%
+  tune_grid(resamples = bike_folds,
+            grid = bike_grid,
+            metrics = reg_metrics)
+
+lowest_rsme_penalty <- bike_rrtune_rs %>%
+  select_best("rmse", penalty)
+
+final_rr <- bike_rrtune_wf %>%
+  finalize_workflow(lowest_rsme_penalty)
+
+print(paste('The lowest rmse Ridge penalty is',lowest_rsme_penalty$penalty))
+
+```
+Using the above penalty, we can now fit the model on the training data. Testing this model, we get accuracy/error measures of: 
+```{r}
+final_rr_fit <- final_rr %>%
+  fit(df_bike_train_norm)
+
+pred_final_rr_fit <- final_rr_fit %>%
+  augment(df_bike_test_norm)
+
+
+curr_metrics <- pred_final_rr_fit %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+new_results <- tibble(model = 'Ridge Regression',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+#results <- bind_rows(results2,new_results)
+
+knitr::kable(new_results,digits=3)
+
+```
+
+
+Here are the variable coefficients and significance.
+```{r}
+ridge_model <- final_rr_fit %>%
+  extract_fit_parsnip() %>% 
+  tidy()
+
+knitr::kable(ridge_model,digits=3)
+
+final_rr_fit %>%
+  extract_fit_parsnip() %>%
+  vip()
+
+```
+
+
+
+Here is a visualization of how well the model was able to predict the rented bike count:
+```{r}
+pred_final_rr_fit %>%
+  ggplot(aes(y = .pred, x = rented_bike_count)) +
+  geom_point(col = "#6e0000") +
+  geom_abline(col="gold") +
+  ggtitle("Predicted Salary vs Actual Salary", subtitle=paste("Ridge Regression"))
+```
+
+
+#### Lasso Regression
+
+
+```{r}
+lasso_spec <- linear_reg(penalty = tune(),mixture = 1) %>%
+  set_engine("glmnet") %>%
+  set_mode("regression")
+
+bike_lassotune_wf <- workflow() %>%
+  add_model(lasso_spec) %>%
+  add_formula(rented_bike_count ~ .-rented_demand_level)
+
+bike_lassotune_rs <- bike_lassotune_wf %>%
+  tune_grid(resamples = bike_folds,
+            grid = bike_grid,
+            metrics = reg_metrics)
+
+lowest_rmse_lasso <- bike_lassotune_rs %>%
+  select_best("rmse", penalty)
+
+print(paste('The lowest rmse Ridge penalty is',lowest_rmse_lasso$penalty))
+
+final_lasso <- bike_lassotune_wf %>%
+  finalize_workflow(lowest_rmse_lasso)
+
+```
+
+
+Using the above penalty, we can now fit the model on the training data. Testing this model, we get accuracy/error measures of: 
+```{r}
+
+final_lasso_fit <- final_lasso %>%
+  fit(df_bike_train_norm)
+
+pred_final_lasso_fit <- final_lasso_fit %>%
+  augment(df_bike_test_norm)
+
+curr_metrics <- pred_final_lasso_fit %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+new_results <- tibble(model = 'Lasso Regression',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+#results <- bind_rows(results,new_results)
+
+knitr::kable(new_results,digits=3)
+
+```
+
+
+Here are the variable coefficients and significance.
+```{r}
+lasso_model <- final_lasso_fit %>%
+  extract_fit_parsnip() %>% 
+  tidy()
+
+knitr::kable(lasso_model,digits=3)
+
+final_lasso_fit %>%
+  extract_fit_parsnip() %>% 
+  vip()
+```
+
+
+Here is a visualization of how well the model was able to predict the rented bike count:
+```{r}
+pred_final_lasso_fit %>%
+  ggplot(aes(y = .pred, x = rented_bike_count)) +
+  geom_point(col = "#6e0000") +
+  geom_abline(col="gold") +
+  ggtitle("Predicted Salary vs Actual Salary", subtitle=paste("Lasso Regression"))
+```
+
+
+```{r}
+# set.seed(123)
+# bike_grid <- tibble(deg_free = 1:10)
+# 
+# bike_recipe_tune <- recipe(rented_bike_count ~ .,data = df_bike_train_norm) %>%
+#   step_rm(rented_demand_level) %>%
+#   step_ns(temperature_c, deg_free = tune())
+# 
+# bike_ns_rs <- workflow() %>%
+#   add_model(reg_spec) %>%
+#   add_recipe(bike_recipe_tune) %>%
+#   tune_grid(resamples = bike_folds,
+#             grid = bike_grid)
+# 
+# bike_ns_rs %>%
+#   select_best('rmse',deg_free)
+# 
+# bike_ns_rs %>%
+#   select_best('rsq',deg_free)
+# 
+# bike_ns_rs %>%
+#   collect_metrics() %>%
+#   ggplot(aes(x = deg_free, y = mean, col = .metric)) +
+#   geom_line() +
+#   geom_point() +
+#   facet_grid(.metric ~., scales = "free") +
+#   theme_bw()
+```
+
+
+row 
+-----------------------------------------------------------------------
+### GAM Regression
+
+Now that we are sure that all the predictors in the model are important, we can look into using a GAM model to try and capture any non-linear relationships between the target variable and the predictors. 
+
+row {data-height=3700}
+-----------------------------------------------------------------------
+#### GAM Model
+We will begin by fitting a cubic spline on all of the quantitative variables. We can see in the model summary that all the terms are significant.
+
+```{r}
+gam_spec <- gen_additive_mod() %>%
+  set_engine("mgcv") %>%
+  set_mode("regression")
+
+bike_gam <- gam_spec %>%
+  fit(rented_bike_count ~ s(temperature_c, bs = "cr") + s(humidity_percent, bs = "cr") + s(wind_speed_m_s, bs = "cr") + s(visibility_10m, bs = "cr") + s(solar_radiation_mj_m2, bs = "cr") + holiday_Holiday + time_day_Overnight + time_day_Evening + rain_yes_X1 + snow_yes_X1 + winter_X1, data = df_bike_train_norm)
+
+summary(bike_gam$fit)
+```
+When we check the model diagnostics, there are some problems that should probably be further investigated. There is a strong curve in many of the outputs showing that there are some fit issues for our model for the higher and lower values. For the check K table, three of the k-index numbers are below 1 and the edf is approaching k'. Additional models should be created adjusting the K numbers for these variables. 
+```{r}
+gam.check(bike_gam$fit)
+```
+
+Creating plots of the GAM variables against the target variable helps see how the target changes as each individual predictor changes. 
+```{r}
+plot(bike_gam$fit)
+```
+
+Although we know that this GAM model has some issue that could be fixed, let's see how it performed in terms of the error measures: 
+
+```{r}
+
+pred_bike_gam <- bike_gam %>%
+  augment(df_bike_test_norm)
+
+curr_metrics <- pred_bike_gam %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+new_results <- tibble(model = 'GAM',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+#results <- bind_rows(results,new_results)
+
+knitr::kable(new_results,digits=3)
+
+```
+
+We can also visualize how well the model was able to predict the rented bike count:
+```{r}
+pred_bike_gam %>%
+  ggplot(aes(y = .pred, x = rented_bike_count)) +
+  geom_point(col = "#6e0000") +
+  geom_abline(col="gold") +
+  ggtitle("Predicted Salary vs Actual Salary", subtitle=paste("GAM"))
+```
+
+
+Rented Demand Level Models {data-orientation=rows}
+=======================================================================
+### Predicting Rented Demand Level (Categorical Target)
+
+
+
+row {data-height=500}
+-----------------------------------------------------------------------
+#### Logistic Regression Prediciting Rented Bike Count
+
+
+Here is a look at a logistic regression model predicting High or Low rented demand
+```{r}
+#Define the logistic model specification
+log_spec <- logistic_reg() %>%
+             set_engine('glm') %>%
+             set_mode('classification') 
+
+#Fit the initial logistic model using all predictors except for rented_bike_count (continuous target)
+log_fit <- log_spec %>%
+              fit(rented_demand_level ~ .-rented_bike_count, data = df_bike_train_norm)
+
+#Capture the predictions and metrics
+my_classification_metrics <- metric_set(yardstick::accuracy, yardstick::specificity, yardstick::sensitivity)
+
+pred_log_fit <- augment(log_fit, df_bike_test_norm)
+
+knitr::kable(tidy(log_fit$fit),digits=3)
+
+
+```
+
+row 
+-----------------------------------------------------------------------
+##### Model Results and Accuracy
+
+Based on the above model, when run on the test dataset we get the following results:
+
+
+###### Accuracy Results
+
+```{r}
+curr_metrics <- pred_log_fit %>%
+  my_classification_metrics(truth=rented_demand_level,estimate=.pred_class) %>%
+  select(-.estimator)
+
+results <- tibble(Model = 'Logistic Regression',
+                  Accuracy = curr_metrics[[1,2]],
+                  ErrorRate = 1-Accuracy,
+                  Sensitivity = curr_metrics[[2,2]],
+                  Specificity = curr_metrics[[3,2]])
+
+knitr::kable(results,digits=3)
+```
+
+###### Confusion Matrix
+```{r}
+pred_log_fit %>%
+  conf_mat(truth=rented_demand_level,estimate=.pred_class)
+
+
+```
+row {data-height=500}
+-----------------------------------------------------------------------
+#### ROC Curve and Model Cut-off
+
+```{r}
+#examination of cutoff and updated test metrics if you change the cutoff
+
+ROC_threshold <- function(truth,prediction) {
+  #This function finds the cutoff with the max sum of sensitivity and specificity
+  #Modified from: http://scipp.ucsc.edu/~pablo/pulsarness/Step_02_ROC_and_Table_function.html
+  #roc() function is from the library pROC
+  #roc() assumes levels are (negative,positive/main) so we need to swap levels
+  levels = c(levels(truth)[2],levels(truth)[1])
+  ROC <- roc(truth, prediction,levels=levels)
+  ROC_table <- cbind(ROC$thresholds, ROC$sensitivities, ROC$specificities, ROC$auc)
+  best_row = which.max(ROC_table[, 2] + ROC_table[, 3])
+  print(paste("Best Cutoff", round(ROC_table[best_row,1],4),
+  "Sensitivity", round(ROC_table[best_row,2],4),
+  "Specificity", round(ROC_table[best_row,3],4),
+  "AUC for Model", round(ROC_table[best_row,4],4)))
+}
+
+ROC_threshold(pred_log_fit$rented_demand_level,pred_log_fit$.pred_High)
+
+
+```
+
+##### ROC Curve
+
+```{r}
+#Capture the auc 
+log_auc <- pred_log_fit %>%
+  roc_auc(truth=rented_demand_level,estimate=.pred_High) %>%
+  pull(.estimate)
+
+#Capture the thresholds and sens/spec
+log_roc <- pred_log_fit %>% roc_curve(truth=rented_demand_level,estimate=.pred_High) %>% 
+          mutate(model = paste('Logistic',round(log_auc,2)))
+
+#Create the ROC Curve(s) 
+ggplot(log_roc, 
+            aes(x = 1 - specificity, y = sensitivity, 
+                group = model, col = model)) +
+      geom_path() +
+      geom_abline(lty = 3)  +
+      scale_color_brewer(palette = "Dark2") +
+      theme(legend.position = "top")
+```
+
+
+
+##### Updating Model Cut Off
+
+```{r}
+pred_log_newcutoff <- pred_log_fit %>%
+  mutate(pred_high_5895 = factor(ifelse(.pred_High > .5895,"High","Low"), levels=c("High","Low")))
+
+pred_log_newcutoff %>%
+  conf_mat(truth=rented_demand_level,estimate=pred_high_5895)
+
+curr_metrics <- pred_log_newcutoff %>%
+  my_classification_metrics(truth=rented_demand_level,estimate=pred_high_5895)
+
+knitr::kable(curr_metrics, digits=3)
+
+results_new <- tibble(Model = 'Logistic Regression - Cutoff = .5895',
+                  Accuracy = curr_metrics[[1,3]],
+                  ErrorRate = 1-Accuracy, 
+                  Sensitivity = curr_metrics[[2,3]],
+                  Specificity = curr_metrics[[3,3]])
+
+results <-  bind_rows(results, results_new)
+
+knitr::kable(results, digits=3)
+```
+
+Model Conclusions {data-orientation=rows}
+=======================================================================
+
+The logistic classification model with a cut off of .5895 is able to predict high or low demand with 86.9% accuracy. The GAM model is able to explain 65.6% of the variation in Rented Demand Count. The GAM model tend to underpredict for the higher rented demand counts, so it is not surprising that the logistic model has such a high accuracy rate. 
+
+row 
+-----------------------------------------------------------------------
+### Rented Demand Level Model Comparisons
+
+
+```{r}
+knitr::kable(results, digits=3)
+```
+
+
+row 
+-----------------------------------------------------------------------
+### Rented Bike Count Model Comparisons
+
+Here is a comparison table of all models run above. As mentioned above, the Linear Regression model with the binary precipitation predictors was stronger than using the actual precipitation measurements. Since we did a lot of reduction of our variables based on the EDA, the ridge and lasso models ended up being fairly similar to our original linear regression. 
+
+Unsurprisingly, the strongest model is the GAM model that takes into account non-linear relationships. We could potentially build a stronger GAM model by playing around with the K values more, but for this analysis will be stopping here. 
+
+row {data-height=700}
+-----------------------------------------------------------------------
+#### Accuracy/Error Metrics
+
+```{r}
+curr_metrics <- pred_reg_fit_norm %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+results1 <- tibble(model = 'Linear Reg - Weather Measurements',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+curr_metrics <- pred_reg_fit_norm2 %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+results2 <- tibble(model = 'Linear Reg - Weather Indicators',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+curr_metrics <- pred_final_rr_fit %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+results3 <- tibble(model = 'Ridge Regression',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+curr_metrics <- pred_final_lasso_fit %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+results4 <- tibble(model = 'Lasso Regression',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+curr_metrics <- pred_bike_gam %>%
+  reg_metrics(truth=rented_bike_count,estimate=.pred) %>%
+  select(-.estimator)
+
+results5 <- tibble(model = 'GAM',
+                  rsq=curr_metrics[[1,2]],
+                  mae=curr_metrics[[2,2]],
+                  rmse = curr_metrics[[3,2]])
+
+results2 <- bind_rows(results1,results2,results3,results4,results5)
+
+knitr::kable(results2,digits=3)
+```
+
+#### Actual vs. Predicted Plots
+Based on the table to the left, we will graph the actual vs. predicted plots of the top three models based on R-squared and RMSE to visualize the model accuracy. 
+
+In the graph, the normal linear regression and lasso linear regression are very similar while the GAM points are clearly tighter to the ab line. All the models have an issue with underestimating for the higher rented bike counts.
+```{r}
+df_pred <- bind_rows(pred_reg_fit_norm %>%
+                       mutate(model = "Reg"),
+                     pred_final_lasso_fit %>%
+                       mutate(model = "Lasso"),
+                     pred_bike_gam %>%
+                       mutate(model = "GAM"))
+df_pred %>%
+  ggplot(aes(x = .pred, y = rented_bike_count, color = model)) +
+  geom_point() +
+  geom_abline(slope = 1)
+
+
+```
+
+
+row 
+-----------------------------------------------------------------------
+### Best Regression Model
+
+
+```{r}
+summary(bike_gam$fit)
+```
+
+
+Reflection {data-orientation=rows}
+=======================================================================
+
+row 
+-----------------------------------------------------------------------
+### What did work hardest on or are you most proud of in your project?
+
+I worked the hardest on the formatting and knitting of my dashboard. Since these dashboard are knew to me, I felt like I had to keep knitting it over and over to see how things were coming out. Towards the end of the project, I had a better sense of what I was trying to do formatting but it still took more work than the modelling. There is a lot more I could have done to make my formatting better, so I wouldn't say I am most proud of that aspect of it although it was the part I had to work the hardest at. 
+
+I am proud of my EDA and data visualizations and I feel I gave a strong sense of what the data is like so someone would understand what data is being worked through before beginning the models. I also did a lot of cleaning up my variables based on my EDA and having use this dataset before, to save time pruning insignificant variables out of my models. 
+
+
+row 
+-----------------------------------------------------------------------
+### What would you do if you had another week to work on the project?
+
+There is so much more that could be done in terms of modeling. I really enjoy working through the different models and trying different things to try and improve them but did not have enough time to do as much of that as I could have. I would have liked to build more classification models to compare against my logistic regression. 
